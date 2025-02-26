@@ -1,0 +1,184 @@
+#include <iostream>
+#include<iomanip>
+#include<fstream>
+#include<cmath>
+#include<vector>
+#include<string>
+#include<complex>
+
+using namespace std;
+using cd = complex<double>;
+ 
+int main()
+{
+    int nb, np, nl, iteration, sid;      // sid stands for slack bus id;
+    double alpha, tolerance, error;
+    ifstream file("bus_data");
+    file >> nb >> np >> iteration >> alpha >> tolerance;
+    
+    vector<cd> S(nb+1);
+    vector<cd> V(nb+1);
+    vector<vector<double>> limit(nb+1, vector<double>(2));
+    vector<int> id(nb+1);
+    
+    for(int i=1;i<=nb;i++){
+        double s_real, s_imag, v_abs, v_arg;
+        file >> id[i] >> s_real >> s_imag >>v_abs >> v_arg >> limit[i][0] >> limit[i][1];
+        S[i] = cd(s_real, s_imag);
+        V[i] = polar(v_abs, v_arg);
+    }
+    file.close();
+    
+    ifstream file2("line_data");
+    bool is_admt;
+    file2 >> is_admt >> nl;
+    vector<vector<double>> lines(nl, vector<double>(5));
+    vector<vector<cd>> Y(nb+1, vector<cd>(nb+1));
+    for(int i=0;i<nl;i++){
+        file2 >> lines[i][0] >> lines[i][1] >> lines[i][2] >> lines[i][3] >> lines[i][4];
+        int l = lines[i][0];
+        int m = lines[i][1];
+        cd y_sh(0,lines[i][2]);
+        cd y_series(lines[i][3], lines[i][4]);
+        if(!is_admt){
+            y_series = 1.0/y_series;
+            lines[i][3] = y_series.real();
+            lines[i][4] = y_series.imag();
+        }
+        Y[l][l] += (y_series + y_sh);
+        Y[m][m] += (y_series + y_sh);
+        Y[l][m] -= (y_series);
+        Y[m][l] -= (y_series);
+    }
+    for(auto& row : Y){
+        for(auto& ele : row){
+            cout<<ele<<" ";
+        }
+        cout<<endl;
+    }
+    
+    // calculation of voltages at variuos buses;
+    int r;
+    
+    for(r = 0; r<iteration;r++){                 // iterate the whole computation process for r times;
+        double dv_max = 0;                       // 
+        
+        for(int i = 1; i<= nb; i++){             // traverse through all the buses for computation of volatges;
+            if(id[i] == 0) sid = i;
+            
+            else if(id[i] == 1){                 // id == 1 => PQ bus;
+                cd sum = 0;
+                for(int k =1; k<=nb;k++){
+                    if(k!=i){
+                        sum += Y[i][k]*V[k];
+                    }
+                }
+                cd V_new = ((conj(S[i])/conj(V[i])) - sum)/Y[i][i];
+                V_new = V[i] + alpha*(V_new - V[i]);
+                
+                if(abs(V_new)<= limit[i][0]) V_new = polar(limit[i][0], arg(V_new));
+                else if(abs(V_new)>= limit[i][1]) V_new = polar(limit[i][1], arg(V_new));
+               // else V_new = polar(abs(V[i]), arg(V_new));                 // doubt in this line;
+                double dv = abs(V_new - V[i]);
+                if(dv > dv_max) dv_max = dv; 
+                V[i] = V_new;
+                cout<<V_new<<endl;
+            }
+            
+            else if(id[i] == 2){                  // id == 2 => PV bus;
+                cd sum = 0;
+                cd reduction = 0;
+                int Q_limit = 0;
+                for(int k = 1; k<= nb; k++){
+                    if(k == i) reduction = Y[i][k]*V[k];
+                    sum += Y[i][k]*V[k];
+                }
+                double Q_new = - (conj(V[i])*sum).imag();
+                if(Q_new <= limit[i][0]){
+                    Q_new = limit[i][0];
+                    Q_limit = 1;
+                }
+                else if(Q_new >= limit[i][1]){
+                    Q_new = limit[i][1];
+                    Q_limit = 1;
+                }
+                //else Q_new = S[i].imag();            // have doubt here too;
+                S[i].imag(Q_new);
+                cd V_new  =  ((conj(S[i])/conj(V[i])) - sum + reduction)/Y[i][i];
+                V_new = V[i] + alpha*(V_new - V[i]);
+                
+                if(Q_limit == 0){
+                    V_new = polar(abs(V[i]),arg(V_new));        // only change the angle of the voltage not the magnitude;
+                }
+                 double dv = abs(V_new - V[i]);
+                if(abs(dv) > abs(dv_max)) dv_max = abs(dv);
+                V[i] = V_new;
+                cout<<V_new<<endl;
+            }
+        }
+        
+        if(abs(dv_max)<= tolerance){
+            error = dv_max;
+            break;
+        }
+    }
+    
+    // power calculation on slack bus;
+    cd sum = 0;
+    for(int k = 1;k<=nb;k++){
+            sum += conj(Y[sid][k])*conj(V[k]);
+    }
+    S[1] = V[1]*(sum);      // assign the calculated power to S[1];
+    
+    // now write the data to an output file;
+    ofstream file3("output_line_flow");
+    file3 <<" Y-bus matrix elements are : \n";
+    for(int i = 1;i<=nb;i++){
+        for(int j = 1;j<=nb;j++){
+            file3 <<"Y"<<i<<j<<"   : ";
+            file3 << Y[i][j].real() << " " ;
+            file3 << (Y[i][j].imag() >= 0 ? "+ " : "- ") ;
+            file3 << "j" << abs(Y[i][j].imag()) << endl;
+        }
+    }
+    file3<<"\n\n\n ";
+    file3<<"converged in "<<r<<" iterations :"<<"\n "<<"Error after "<<r<<" iterations : ";
+    file3<<error<<"\n\n "<<endl;
+    file3<<left<<setw(37)<<"Bus No."<<setw(24)<<"(Voltage in Polar)"<<setw(20)<<"(Voltage in Rect.)"<<endl;
+    file3<<left<<setw(15) <<"type"<< setw(10) <<"P"<< setw(12) <<"Q";
+    file3<<setw(12) <<"|V|"<<setw(13)<<"alpha"<<setw(12)<<"real"<<setw(10)<<"imag";
+    file3<<setw(10)<< endl;
+    file3<<string(90, '-')<<endl;
+         
+    for(int i = 1;i<=nb;i++){
+        file3 << left << setw(1) << i << ". ";          // Ensuring consistent width for numbering
+        if(id[i] == 0) file3 << setw(11) << "(slack)";
+        else if(id[i] == 1) file3 << setw(11) << "(PQ)";
+        else file3 << setw(11) << "(PV)";
+        file3<<setw(10)<<S[i].real()<<setw(12)<<S[i].imag();
+        file3<<setw(12)<<abs(V[i])<<setw(13)<<arg(V[i])<<setw(10)<<V[i].real();
+        file3<<setw(10)<<V[i].imag()<<endl;
+    }
+    file3<<" \n\n\n "<<"Now these are the line flows through each line =>"<<"\n "<<endl;
+    file3<<left<<setw(15)<<"Line no."<<setw(21)<<"Bus code"<<setw(23)<<"Line flows(Sik)"<<endl;
+    file3<<string(66, '-')<<endl;
+    
+    
+    // now calculate the line flows through each line;
+    vector<vector<cd>> line_flow;     // created a vector to store the flow quantities;
+    
+    for(int i=0;i<nl;i++){
+        int l = lines[i][0];      // line[0]  => from bus;
+        int m = lines[i][1];      // line[1]  => to bus;
+        cd y_series(lines[i][3],lines[i][4]);          // series admittance connected to line l - m;
+        cd y_shunt(0,lines[i][2]);        // shunt admittance connected to this line;
+        cd Slm = (((conj(V[l])-conj(V[m]))*conj(y_series)) + conj(V[l])*conj(y_shunt))*V[l];    // line flow from bus no. l to bus no. m;
+        cd Sml = (((conj(V[m])-conj(V[l]))*conj(y_series)) + conj(V[m])*conj(y_shunt))*V[m];    // line flow from bus no. m to bus no. l;
+        file3<<left<<setw(1)<<(i+1)<<setw(15)<<"."<<l<<" - "<<setw(15)<<m<<Slm<<endl;
+        file3<<left<<setw(1)<<(i+1)<<setw(15)<<"."<<m<<" - "<<setw(15)<<l<<Sml<<endl;
+        line_flow.push_back({Sml, Slm});
+    }
+    file3.close();
+    return 0;
+}
+   
